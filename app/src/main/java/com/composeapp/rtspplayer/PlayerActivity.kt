@@ -1,5 +1,6 @@
 package com.composeapp.rtspplayer
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
@@ -24,6 +25,7 @@ import com.composeapp.rtspplayer.databinding.ActivityVideoPlayerBinding
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
+import org.videolan.libvlc.util.HWDecoderUtil
 
 class PlayerActivity : AppCompatActivity() {
     private lateinit var server:String
@@ -33,10 +35,13 @@ class PlayerActivity : AppCompatActivity() {
     private var _isRecording = false
 
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onStart() {
         super.onStart()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(pipReceiver, IntentFilter("ACTION_CLOSE_PIP"), RECEIVER_NOT_EXPORTED)
+        }else{
+            registerReceiver(pipReceiver, IntentFilter("ACTION_CLOSE_PIP"))
         }
     }
 
@@ -59,6 +64,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun initView() {
         binding.serverText.text = server
+        binding.surfaceView.keepScreenOn = true
         binding.recording.setOnClickListener {
             if (_isRecording) {
                 stopRecording()
@@ -66,7 +72,7 @@ class PlayerActivity : AppCompatActivity() {
                 startRecording(server)
             }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             binding.pictureInPicture.visibility = View.VISIBLE
         } else {
             binding.pictureInPicture.visibility = View.GONE
@@ -74,8 +80,10 @@ class PlayerActivity : AppCompatActivity() {
 
 
         binding.pictureInPicture.setOnClickListener {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 onPause()
+            }else{
+                Toast.makeText(this, "Your Device is not supported for PIP.", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -98,47 +106,48 @@ class PlayerActivity : AppCompatActivity() {
     private fun startStreaming() {
         try {
             val options = arrayListOf(
-                "--rtsp-tcp", // Use TCP instead of UDP
+                "--rtsp-tcp", // Use TCP for RTSP
                 "--no-drop-late-frames",
                 "--no-skip-frames",
                 "--vout=android-display",
                 "--verbose=2"
             )
 
-            libVlc =
-                LibVLC(this, options)
+            // Initialize LibVLC
+            libVlc = LibVLC(this, options)
 
+            // Initialize MediaPlayer
             mediaPlayer = MediaPlayer(libVlc).apply {
-                // Set up the media (RTSP URL)
-                attachViews(
-                    binding.surfaceView,
-                    null,
-                    false,
-                    false
-                )
+
+                attachViews(binding.surfaceView, null, false, false)
             }
 
+            // Create Media instance with the RTSP URL
             val media = Media(libVlc, Uri.parse(server)).apply {
                 setHWDecoderEnabled(true, false)
                 addOption(":codec=mediacodec")
                 addOption(":no-mediacodec-dr")
-                addOption(":low-delay")
-                addOption(":skip-frames")
-                addOption("--no-drop-late-frames")
-                addOption("--no-skip-frames")
-
+                addOption(":network-caching=1000")
+                addOption(":rtsp-frame-buffer-size=100000")
+                addOption(":file-caching=1000")
+                addOption(":live-caching=1000")
+                addOption(":clock-jitter=0")
+                addOption(":clock-synchro=0")
             }
 
-            // release previous media safely
+            // Release previous media (if any)
             mediaPlayer.media?.release()
 
+            // Assign media to player and play
             mediaPlayer.media = media
             mediaPlayer.play()
 
+            // Optional: Log events
             mediaPlayer.setEventListener { event ->
-                Log.d("RTSP", "Event: ${event}")
+                Log.d("RTSP", "Event type: ${event.type}, timeChanged: ${event.timeChanged}")
             }
         } catch (e: Exception) {
+            e.printStackTrace()
             Log.d("RTSP", "Error ${e.message}")
             Toast.makeText(
                 this,
@@ -161,7 +170,8 @@ class PlayerActivity : AppCompatActivity() {
         super.onStop()
     }
 
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun enterPIPMode() {
         val closeIntent = PendingIntent.getBroadcast(
             this,
@@ -176,16 +186,19 @@ class PlayerActivity : AppCompatActivity() {
             PictureInPictureParams.Builder()
                 .setAspectRatio(
                     Rational.parseRational("4:3")
-                )
-                .setCloseAction(
-                    RemoteAction(
-                        Icon.createWithResource(this, R.drawable.baseline_close_24),
-                        "Close",
-                        "Close",
-                        closeIntent
+                ).setActions(
+                    listOf(
+                        RemoteAction(
+                            Icon.createWithResource(
+                                this,
+                                R.drawable.baseline_close_24
+                            ),
+                            "Close",
+                            "Close",
+                            closeIntent
+                        )
                     )
                 )
-
                 .build()
         )
 
@@ -194,7 +207,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onPause() {
         if (_isRecording) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             enterPIPMode()
         } else {
             stopStream()
@@ -207,16 +220,9 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    @Deprecated("This method has been deprecated in favor of using the\n      {@link OnBackPressedDispatcher} via {@link #getOnBackPressedDispatcher()}.\n      The OnBackPressedDispatcher controls how back button events are dispatched\n      to one or more {@link OnBackPressedCallback} objects.")
-    override fun onBackPressed() {
-        stopStream()
-        super.onBackPressed()
-    }
-
     private fun stopStream() {
         mediaPlayer.stop()
         Toast.makeText(this, "Stream stopped", Toast.LENGTH_SHORT).show()
-
     }
 
     private fun startRecording(rtspUrl: String) {
